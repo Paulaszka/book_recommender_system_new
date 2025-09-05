@@ -5,37 +5,51 @@ import time
 import os
 import kagglehub
 
+BATCH_SIZE = 100
+
 path = kagglehub.dataset_download("mshepherd/board-games")
-
-print("Path to dataset files:", path)
-
 csv_path = os.path.join(path, "bgg_GameItem.csv")
 df = pd.read_csv(csv_path)
 
-if 'bgg_id' not in df.columns:
-    raise ValueError("Brakuje wymaganej kolumny 'bgg_id' w pliku CSV.")
+all_bgg_ids = df['bgg_id'].dropna().astype(int)
+total_games = len(all_bgg_ids)
+total_batches = (total_games + BATCH_SIZE - 1) // BATCH_SIZE
 
-bgg_ids = df['bgg_id'].dropna()
+start_batch = 0
 
-print(f"Znaleziono {len(bgg_ids)} ID gier do przetworzenia")
+try:
+    while start_batch < total_batches:
+        start_idx = start_batch * BATCH_SIZE
+        end_idx = min((start_batch + 1) * BATCH_SIZE, total_games)
+        current_batch_ids = all_bgg_ids.iloc[start_idx:end_idx]
 
-results = []
+        print(f"\nBatch {start_batch} ({len(current_batch_ids)} gier: {start_idx}–{end_idx-1})")
 
-for bgg_id in bgg_ids:
-    try:
-        url = f"https://boardgamegeek.com/xmlapi2/thing?id={int(bgg_id)}"
-        response = requests.get(url, timeout=10)
-        root = ET.fromstring(response.content)
-        image_elem = root.find('.//image')
-        image_url = image_elem.text if image_elem is not None else ""
-        results.append({'bgg_id': int(bgg_id), 'image': image_url})
-        print(f"{bgg_id}: {image_url}")
-        time.sleep(1)  # BGG API rate limit
-    except Exception as e:
-        print(f"Błąd dla {bgg_id}: {e}")
-        results.append({'bgg_id': int(bgg_id), 'image': ""})
+        output_csv = f"boardgame_images_batch_{start_batch}.csv"
+        if os.path.exists(output_csv):
+            print(f"Plik {output_csv} już istnieje – pomijam.")
+            start_batch += 1
+            continue
 
-# Zapisz wyniki do pliku CSV
-output_csv = "boardgame_images.csv"
-pd.DataFrame(results).to_csv(output_csv, index=False)
-print(f"Zapisano {len(results)} rekordów do pliku {output_csv}.")
+        results = []
+        for bgg_id in current_batch_ids:
+            try:
+                url = f"https://boardgamegeek.com/xmlapi2/thing?id={bgg_id}"
+                response = requests.get(url, timeout=10)
+                root = ET.fromstring(response.content)
+                image_elem = root.find('.//image')
+                image_url = image_elem.text if image_elem is not None else ""
+                results.append({'bgg_id': bgg_id, 'image': image_url})
+                time.sleep(1)  # limitowanie zapytań
+            except Exception:
+                results.append({'bgg_id': bgg_id, 'image': ""})
+
+        pd.DataFrame(results).to_csv(output_csv, index=False)
+        print(f"Zapisano batch {start_batch} ({len(results)} rekordów) -> {output_csv}")
+
+        start_batch += 1
+
+    print("\nWszystkie batche przetworzone!")
+
+except KeyboardInterrupt:
+    print(f"\nPrzerwano ręcznie w batchu {start_batch}.")
